@@ -10,18 +10,7 @@ The target use case is small-scale produce handling, where a user needs to weigh
 - Append transaction records to a microSD card.
 - Keep the hardware compact and powered from a regulated 5 V supply.
 ## Workflow
- Produce on weighing platform
-            |
-          Load cell
-            |
-           HX711
-            |
-           ESP32 <------ Add / Subtract / Reset buttons
-          /     \
-         /       \
-  16x2 LCD      microSD card
-  (SPI)          (SPI)
-
+- Workflow: workflow/
 ## Firmware and Wiring
 - Firmware: firmware/
 - Circuit and pin map: hardware/
