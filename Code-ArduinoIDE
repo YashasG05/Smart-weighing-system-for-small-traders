@@ -1,1 +1,163 @@
+#include <Arduino.h>
+#include <U8g2lib.h>
+#include <HX711.h>
 
+
+#define HX_DOUT 26
+#define HX_SCK  27
+
+// OLED SPI
+#define OLED_SCK  22
+#define OLED_MOSI 23
+#define OLED_RES  33
+#define OLED_DC   12
+#define OLED_CS   32
+
+
+#define BTN_ADD    5
+#define BTN_SUB    21
+#define BTN_RESET  19
+
+const float CAL_FACTOR    = 420.0f;   // <-- CHANGE after calibration (raw units per gram)
+const float MIN_WEIGHT_G  = 1.0f;     // ignore anything lighter than this on ADD/SUB
+const unsigned long DEBOUNCE_MS = 40;
+const unsigned long MSG_MS      = 1500;
+const unsigned long DISPLAY_MS  = 150;
+
+
+U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI display(
+  U8G2_R0, OLED_SCK, OLED_MOSI, OLED_CS, OLED_DC, OLED_RES);
+
+HX711 scale;
+
+float inventory  = 0.0f;
+float liveWeight = 0.0f;
+char  msg[24]    = "";
+unsigned long msgUntil    = 0;
+unsigned long lastDisplay = 0;
+
+struct Button {
+  uint8_t pin;
+  bool lastReading;
+  bool stableState;
+  unsigned long lastChange;
+};
+
+Button btnAdd   = {BTN_ADD,   HIGH, HIGH, 0};
+Button btnSub   = {BTN_SUB,   HIGH, HIGH, 0};
+Button btnReset = {BTN_RESET, HIGH, HIGH, 0};
+
+bool wasPressed(Button &b) {
+  bool r = digitalRead(b.pin);
+  if (r != b.lastReading) {
+    b.lastReading = r;
+    b.lastChange = millis();
+  }
+  if ((millis() - b.lastChange) > DEBOUNCE_MS && r != b.stableState) {
+    b.stableState = r;
+    if (r == LOW) return true;
+  }
+  return false;
+}
+
+void showMessage(const char *text) {
+  strncpy(msg, text, sizeof(msg) - 1);
+  msg[sizeof(msg) - 1] = '\0';
+  msgUntil = millis() + MSG_MS;
+}
+
+void drawScreen() {
+  char buf[24];
+  display.clearBuffer();
+
+  display.setFont(u8g2_font_6x12_tr);
+  snprintf(buf, sizeof(buf), "Weight: %.1f g", liveWeight);
+  display.drawStr(0, 11, buf);
+
+  display.drawStr(0, 27, "INVENTORY");
+  display.setFont(u8g2_font_helvB14_tr);
+  snprintf(buf, sizeof(buf), "%.1f g", inventory);
+  display.drawStr(0, 47, buf);
+
+  display.setFont(u8g2_font_6x12_tr);
+  if (millis() < msgUntil) {
+    display.drawStr(0, 62, msg);
+  } else {
+    display.drawStr(0, 62, "ADD   SUB   RST");
+  }
+
+  display.sendBuffer();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(BTN_ADD,   INPUT_PULLUP);
+  pinMode(BTN_SUB,   INPUT_PULLUP);
+  pinMode(BTN_RESET, INPUT_PULLUP);
+
+  display.begin();
+  display.clearBuffer();
+  display.setFont(u8g2_font_6x12_tr);
+  display.drawStr(0, 20, "Starting...");
+  display.drawStr(0, 40, "Keep scale empty");
+  display.sendBuffer();
+
+  scale.begin(HX_DOUT, HX_SCK);
+  scale.set_scale(CAL_FACTOR);
+  scale.tare(15);   // zero the scale with nothing on it
+
+  Serial.println("Ready");
+}
+
+void loop() {
+  if (scale.is_ready()) {
+    float w = scale.get_units(1);
+    liveWeight = 0.7f * liveWeight + 0.3f * w;
+    if (fabs(liveWeight) < 0.5f) liveWeight = 0.0f;  // suppress tiny drift
+  }
+
+  // ---- ADD ----
+  if (wasPressed(btnAdd)) {
+    float w = scale.get_units(10);   // averaged reading for accuracy
+    if (w < MIN_WEIGHT_G) {
+      showMessage("No item on scale");
+    } else {
+      inventory += w;
+      char t[24];
+      snprintf(t, sizeof(t), "Added %.1f g", w);
+      showMessage(t);
+      Serial.printf("ADD %.1f -> inv %.1f\n", w, inventory);
+    }
+  }
+
+  // ---- SUB ----
+  if (wasPressed(btnSub)) {
+    float w = scale.get_units(10);
+    if (w < MIN_WEIGHT_G) {
+      showMessage("No item on scale");
+    } else if (w > inventory) {
+      inventory = 0.0f;
+      showMessage("Inventory now 0");
+    } else {
+      inventory -= w;
+      char t[24];
+      snprintf(t, sizeof(t), "Removed %.1f g", w);
+      showMessage(t);
+      Serial.printf("SUB %.1f -> inv %.1f\n", w, inventory);
+    }
+  }
+
+  // ---- RESET ----
+  if (wasPressed(btnReset)) {
+    inventory = 0.0f;
+    showMessage("Inventory reset");
+    Serial.println("RESET");
+  }
+
+  // ---- Refresh display ----
+  if (millis() - lastDisplay >= DISPLAY_MS) {
+    lastDisplay = millis();
+    drawScreen();
+  }
+}
